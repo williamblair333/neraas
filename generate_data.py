@@ -1,5 +1,6 @@
 '''
-Planetary Magnetic Interference Prediction System - A brief description of what the program does.
+Planetary Magnetic Interference Prediction System - scores every instant across a
+range of years at a fixed interval and writes them to one CSV file.
 Copyright (C) 2024 William Blair
 
 This program is free software: you can redistribute it and/or modify
@@ -16,165 +17,80 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 
 #Example command
-clear; rm *.csv; python generate_data.py --start_year 2024 --end_year 2025 --interval months --csv_output results.csv; cat results.csv
+python generate_data.py --start_year 2024 --end_year 2025 --interval months --csv_output results.csv; cat results.csv
 '''
 
 import argparse
-import subprocess
-from datetime import datetime, timedelta
-from dateutil.relativedelta import relativedelta
-from concurrent.futures import ThreadPoolExecutor, as_completed
-import csv
-import os
+import sys
+from itertools import islice
 
-# Function to run the command and capture output
-def run_command(date, time, output_file):
-    command = [
-        "python", "main.py",
-        "--date", date,
-        "--time", time,
-        "--zone", "-5",
-        "--no_graphic",
-        "--csv_output", output_file,
-        "--append"
-    ]
-    result = subprocess.run(command, capture_output=True, text=True)
-    return date, time, result.stdout.strip()
+from astro_utils import date_to_jdn, jdn_to_date
+from main import compute, write_csv
 
-# Function to generate dates based on interval type (manual for BCE dates)
-def generate_dates(start_year, end_year, interval):
-    current_year = start_year
-    current_month = 1
-    current_day = 1
-    current_hour = 0
-    current_minute = 0
+FIXED_STEP_MINUTES = {"minutes": 1, "hours": 60, "days": 1440}
+CALENDAR_MONTHS = {"months": range(1, 13), "seasons": (1, 4, 7, 10), "years": (1,)}
+CHUNK_SIZE = 20000  # Instants computed per vectorised ephemeris call
 
-    while current_year <= end_year:
-        if current_year < 0:
-            date = f"{abs(current_year):04d}-{current_month:02d}-{current_day:02d} BCE"
-        else:
-            date = f"{current_year:04d}-{current_month:02d}-{current_day:02d}"
 
-        yield date, f"{current_hour:02d}:{current_minute:02d}"
+def to_astronomical_year(year):
+    # Historical numbering (-1000 = 1000 BCE, no year 0) to astronomical (1 BCE = 0)
+    if year == 0:
+        raise ValueError("there is no year 0; use -1 for 1 BCE")
+    return year if year > 0 else year + 1
 
-        # Increment the date based on the interval
-        current_year, current_month, current_day, current_hour, current_minute = increment_date(
-            current_year, current_month, current_day, current_hour, current_minute, interval
-        )
 
-# Helper function to increment date manually
-def increment_date(year, month, day, hour, minute, interval):
-    if interval == "minutes":
-        minute += 1
-        if minute == 60:
-            minute = 0
-            hour += 1
-    elif interval == "hours":
-        hour += 1
-        if hour == 24:
-            hour = 0
-            day += 1
-    elif interval == "days":
-        day += 1
-        if day > 30:  # Simplified, adjust as needed for actual month length
-            day = 1
-            month += 1
-    elif interval == "months":
-        month += 1
-        if month > 12:
-            month = 1
-            year += 1
-    elif interval == "seasons":
-        month += 3
-        if month > 12:
-            month = (month % 12)
-            year += 1
-    elif interval == "years":
-        year += 1
+def generate_instants(start_year, end_year, interval):
+    '''
+    Yield local (year, month, day, hour, minute) instants from 1 January of
+    start_year through 31 December of end_year, with astronomical years and real
+    month lengths (Julian calendar before 1582-10-15, Gregorian after).
+    '''
+    first, last = to_astronomical_year(start_year), to_astronomical_year(end_year)
+    if first > last:
+        raise ValueError("start_year is after end_year")
 
-    return year, month, day, hour, minute
-
-# Helper function to write CSV header
-def write_csv_header(csv_output):
-    if not os.path.exists(csv_output):
-        with open(csv_output, 'w', newline='') as csvfile:
-            writer = csv.writer(csvfile)
-            header = [
-                'Date', 'Time', 'Score', 'Probability',
-                'sun_RA', 'mercury_RA', 'venus_RA', 'earth_RA', 'mars_RA', 'jupiter_RA', 'saturn_RA',
-                'sun_Dec', 'mercury_Dec', 'venus_Dec', 'earth_Dec', 'mars_Dec', 'jupiter_Dec', 'saturn_Dec'
-            ]
-            writer.writerow(header)
-
-# Function to parse and clean the output
-def clean_output(output):
-    if "Score:" in output or "Converted UTC Time:" in output:
-        return None  # Filter out unwanted log messages
-    return output.strip() if isinstance(output, str) else None
-
-# Function to convert BCE/CE date to sortable tuple (year, month, day)
-def parse_bce_ce_date(date_str):
-    if "BCE" in date_str:
-        year, month, day = date_str.split(" ")[0].split("-")
-        year = -int(year)  # Convert BCE year to negative
+    if interval in FIXED_STEP_MINUTES:
+        start = date_to_jdn(first, 1, 1) * 1440
+        stop = date_to_jdn(last + 1, 1, 1) * 1440
+        for total in range(start, stop, FIXED_STEP_MINUTES[interval]):
+            jdn, minute_of_day = divmod(total, 1440)
+            yield (*jdn_to_date(jdn), minute_of_day // 60, minute_of_day % 60)
     else:
-        year, month, day = date_str.split("-")
-        year = int(year)  # CE year remains positive
-    return (year, int(month), int(day))
+        for year in range(first, last + 1):
+            for month in CALENDAR_MONTHS[interval]:
+                yield year, month, 1, 0, 0
+
+
+def generate_rows(instants, zone):
+    instants = iter(instants)
+    while chunk := list(islice(instants, CHUNK_SIZE)):
+        rows, _, _ = compute(chunk, zone)
+        yield from rows
+        print(f"Computed up to {rows[-1][0]} {rows[-1][1]}", file=sys.stderr)
+
 
 # Main function
 def main():
-    parser = argparse.ArgumentParser(description="Generate data in intervals.")
-    parser.add_argument("--start_year", type=int, required=True, help="Start year (e.g., -1000 for 1000 BCE)")
-    parser.add_argument("--end_year", type=int, required=True, help="End year (e.g., 2023)")
+    parser = argparse.ArgumentParser(description="Score planet configurations at fixed intervals and write them to a CSV file.")
+    parser.add_argument("--start_year", type=int, required=True, help="Start year (e.g., -1000 for 1000 BCE; DE406 covers whole years -3000 to 2999)")
+    parser.add_argument("--end_year", type=int, required=True, help="End year, inclusive (e.g., 2023)")
     parser.add_argument("--interval", type=str, required=True, choices=["minutes", "hours", "days", "months", "seasons", "years"], help="Interval type (minutes, hours, days, months, seasons, years)")
     parser.add_argument("--csv_output", required=True, help="CSV output file name")
-    parser.add_argument("--parallel", action="store_true", help="Enable parallel processing (disabled by default)")
+    parser.add_argument("--zone", default="0", help='Zone the instants are local to: UTC offset in hours (write --zone=-03:30 for a negative HH:MM) or IANA name (default: UTC)')
+    parser.add_argument("--append", action="store_true", help="Append to an existing CSV file instead of replacing it")
+    parser.add_argument("--parallel", action="store_true", help="No effect; computation is vectorised. Kept so old commands still run")
 
     args = parser.parse_args()
 
-    # Write CSV header once
-    write_csv_header(args.csv_output)
+    for year in (args.start_year, args.end_year):
+        if not -3000 <= year <= 2999:
+            parser.error(f"year {year} is outside the DE406 ephemeris range (whole years -3000 to 2999)")
 
-    # Initialize the results list
-    results = []
-
-    # Check if parallel processing is enabled
-    if args.parallel:
-        # Use parallel processing
-        with ThreadPoolExecutor() as executor:
-            future_to_date = {executor.submit(run_command, date, time, args.csv_output): (date, time)
-                            for date, time in generate_dates(args.start_year, args.end_year, args.interval)}
-
-            for future in as_completed(future_to_date):
-                date, time = future_to_date[future]
-                try:
-                    result = future.result()
-                    cleaned_result = clean_output(result[2])
-                    if cleaned_result:
-                        results.append((date, time, cleaned_result))
-                except Exception as e:
-                    print(f"Error processing date {date}: {e}")
-    else:
-        # Use sequential processing
-        for date, time in generate_dates(args.start_year, args.end_year, args.interval):
-            try:
-                result = run_command(date, time, args.csv_output)
-                cleaned_result = clean_output(result[2])
-                if cleaned_result:
-                    results.append((date, time, cleaned_result))
-            except Exception as e:
-                print(f"Error processing date {date}: {e}")
-
-    # Sort results by date and time before writing
-    results.sort(key=lambda x: (parse_bce_ce_date(x[0]), x[1]))
-
-    # Append sorted results to CSV
-    with open(args.csv_output, 'a', newline='') as csvfile:
-        writer = csv.writer(csvfile)
-        for date, time, output in results:
-            output_data = output.split(",")
-            writer.writerow([date, time] + output_data)
+    try:
+        instants = generate_instants(args.start_year, args.end_year, args.interval)
+        write_csv(args.csv_output, generate_rows(instants, args.zone), append=args.append)
+    except ValueError as e:
+        parser.error(str(e))
 
 if __name__ == "__main__":
     main()

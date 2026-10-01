@@ -1,5 +1,6 @@
 '''
-Planetary Magnetic Interference Prediction System - A brief description of what the program does.
+Planetary Magnetic Interference Prediction System - scores pairwise heliocentric
+planet angles using J.H. Nelson's aspect principles.
 Copyright (C) 2024 William Blair
 
 This program is free software: you can redistribute it and/or modify
@@ -16,17 +17,34 @@ You should have received a copy of the GNU Affero General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>.
 '''
 # interference_predictor.py
+#
+# The weights, orbs and scaling below were chosen by hand and have not been fitted
+# to any geomagnetic or radio record. "Probability" is a rescaled score clamped to
+# 0-100, not a calibrated probability.
+import numpy as np
+
 
 def predict_interference(angles):
+    # Angles may be scalars or numpy arrays of equal shape (one value per instant)
     score = 0
     for angle_name, angle in angles.items():
-        if 0 <= angle <= 10 or 170 <= angle <= 180:
-            score += 10  # High score for conjunctions and oppositions
-        elif 80 <= angle <= 100:
-            score += 7  # Moderate score for squares (90°)
-        elif 110 <= angle <= 130 or 50 <= angle <= 70:
-            score -= 5  # Low score for trines (120°) and sextiles (60°)
+        angle = np.asarray(angle)
+        score = score + np.select(
+            [
+                ((0 <= angle) & (angle <= 10)) | ((170 <= angle) & (angle <= 180)),
+                (80 <= angle) & (angle <= 100),
+                ((110 <= angle) & (angle <= 130)) | ((50 <= angle) & (angle <= 70)),
+            ],
+            [
+                10,  # High score for conjunctions and oppositions
+                7,   # Moderate score for squares (90°)
+                -5,  # Low score for trines (120°) and sextiles (60°)
+            ],
+            default=0
+        )
 
-    # Convert score to a probability
-    probability = min(100, max(0, score * 1.5))  # Example scaling factor
+    # Convert score to a 0-100 index
+    probability = np.clip(score * 1.5, 0, 100)  # Example scaling factor
+    if np.ndim(score) == 0:
+        return int(score), float(probability)
     return score, probability
