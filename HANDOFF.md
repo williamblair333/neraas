@@ -20,4 +20,5 @@
 
 ## Next Session
 
-- Most important: `/opt/proj/magicians-almanac/core/src/almanac_core/interference.py:45` is an adapted copy of neraas with the same 180° flip (`.observe(sun)`). Its pairwise angles are fine, but any absolute positions it reports are reversed. Decide whether to fix it there.
+- Nothing pending in neraas itself. The open research item is calibration (see "Not done" above).
+- **Done 2026-10-04:** the adapted copy in `magicians-almanac` (`core/src/almanac_core/interference.py`) had the same bugs plus an out-of-range 0.0. It was fixed in that repo's Gitea PR 12, and PR #11, which a mirror force-push had wiped, was restored in Gitea PR 11. That repo's `origin` is now Gitea. Details are in its HANDOFF "READ FIRST — 2026-10-04".
