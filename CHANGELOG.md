@@ -1,5 +1,10 @@
 # Changelog
 
+## 2026-10-04 — Follow-up in magicians-almanac (no neraas code changes)
+
+- Ported the neraas fixes to `magicians-almanac`'s adapted copy (`core/src/almanac_core/interference.py`, Gitea PR 12 there): Sun→planet direction, no Sun placeholder, and None instead of 0.0 outside the ephemeris.
+- `HANDOFF.md`: marked the magicians-almanac item done.
+
 ## 2026-10-01 — Fix errors found by external review; add tests; ignore review folders
 
 ### Fixed
